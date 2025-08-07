@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>2D Scatter + Error Sparklines</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    /* Body & Layout */
+    body {
+      margin: 0; padding: 20px;
+      background-color: #1e1e1e; color: #cccccc;
+      font-family: 'Segoe UI','Consolas','Roboto',monospace;
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh; width: 100vw;
+      background-image:
+        linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+
+    /* SVG Styling */
+    svg {
+      background-color: #252526;
+      background-image: radial-gradient(circle at center, rgba(255,255,255,0.02), transparent 70%);
+      border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      margin-bottom: 20px;
+    }
+
+    /* Controls panel */
+    #controls {
+      display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+      width: 800px; background-color: #252526; padding: 10px 15px;
+      border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.5); margin-top: 10px;
+    }
+    #controls > div { margin: 5px 10px; }
+    label { color: #cccccc; font-size: 0.9rem; }
+
+    /* Sparklines container */
+    #sparklines {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      align-items: center;
+      width: 800px;
+      gap: 8px;
+      margin-top: 10px;
+      margin-bottom: 20px;
+    }
+    svg.spark {
+      background-color: #1e1e1e;
+      border: 1px solid #333333;
+      border-radius: 2px;
+    }
+
+    /* Slider styling */
+    input[type=range] {
+      width: 600px; margin: 0 8px;
+      --win-start:0%; --win-end:0%;
+      background: transparent;
+    }
+    input[type=range]::-webkit-slider-runnable-track {
+      height:6px; border-radius:3px;
+      background: linear-gradient(
+        to right,
+        #888888 0%,
+        #888888 var(--win-start),
+        #4fc3f7 var(--win-start),
+        #4fc3f7 var(--win-end),
+        #888888 var(--win-end),
+        #888888 100%
+      );
+      background-size: calc(100% - 14px) 100%;
+      background-position: 7px 0; background-repeat: no-repeat;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance:none; width:14px; height:14px; border-radius:50%;
+      background:#007acc; cursor:pointer; margin-top:-4px;
+    }
+    input[type=range]::-moz-range-track {
+      height:6px; border-radius:3px;
+      background: linear-gradient(
+        to right,
+        #888888 0%,
+        #888888 var(--win-start),
+        #4fc3f7 var(--win-start),
+        #4fc3f7 var(--win-end),
+        #888888 var(--win-end),
+        #888888 100%
+      );
+      background-size: calc(100% - 14px) 100%;
+      background-position: 7px 0; background-repeat: no-repeat;
+    }
+    input[type=range]::-moz-range-thumb {
+      width:14px; height:14px; border-radius:50%;
+      background:#007acc; cursor:pointer; margin-top:-4px;
+    }
+
+    /* Other inputs */
+    input[type=number] {
+      width:4ch; background-color:#1e1e1e; border:1px solid #3c3c3c;
+      color:#cccccc; border-radius:2px; padding:2px;
+    }
+    input[type=checkbox] { accent-color:#007acc; margin-right:4px; }
+
+    /* Grid & axes */
+    .grid line { stroke:#333333; stroke-opacity:0.6; }
+    .grid path { display:none; }
+    .axis path, .axis line { stroke:#3c3c3c; }
+    .axis text { fill:#cccccc; }
+
+    /* Symbols, vectors & error band */
+    .symbol { stroke-width:1.5px; opacity:0.9; }
+    .symbol.measured { display: inline; }
+    .vector { stroke-linecap:round; marker-end:url(#arrow); }
+    .error-band { pointer-events:none; }
+
+    /* Legend */
+    .legend text { fill:#cccccc; font-size:10px; }
+    .legend rect, .legend path { stroke:#cccccc; stroke-width:1px; }
+  </style>
+</head>
+<body>
+  <svg width="800" height="600">
+    <defs>
+      <marker id="arrow" viewBox="0 -5 10 10" refX="5" refY="0"
+              markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,-3L8,0L0,3" fill="#cccccc"/>
+      </marker>
+    </defs>
+  </svg>
+
+  <div id="controls">
+    <div>
+      <label>Time:
+        <input type="range" id="timeSlider" min="0" max="200" step="1" value="200">
+        <span id="timeValue">200</span>
+      </label>
+    </div>
+    <div>
+      <label>History:
+        <input type="number" id="windowInput" value="10" min="0" max="200"> timesteps
+      </label>
+    </div>
+    <div>
+      <label>
+        <input type="checkbox" id="velocityToggle">
+        Show Velocity Vectors
+      </label>
+    </div>
+    <div id="objectFilters"></div>
+    <div id="typeFilters"></div>
+  </div>
+
+  <!-- Sparklines go here -->
+  <div id="sparklines"></div>
+
+  <script>
+  // Data generator
+  function generateData(obj,t0,t1,step,noise,truthFn){
+    const arr=[];
+    for(let t=t0;t<=t1;t+=step){
+      const {x,y}=truthFn(t);
+      arr.push({object:obj,type:'truth',time:t,x,y});
+      arr.push({object:obj,type:'measured',time:t,
+                x:x+(Math.random()*2-1)*noise,
+                y:y+(Math.random()*2-1)*noise});
+    }
+    return arr;
+  }
+  const t0=0, t1=200, step=2, noise=1;
+  const funcs=[
+    t=>({x:t,y:0.5*t}),
+    t=>({x:0.2*t,y:0.8*t}),
+    t=>{const θ=2*Math.PI*(t/200);return{x:100+80*Math.cos(θ),y:100+80*Math.sin(θ)}},
+    t=>{const θ=2*Math.PI*(t/200);return{x:100+100*Math.cos(θ),y:100+50*Math.sin(θ)}},
+    t=>({x:t,y:100+50*Math.sin(2*Math.PI*(t/200))}),
+    t=>({x:100+50*Math.cos(2*Math.PI*(t/200)),y:t}),
+    t=>{const θ=4*Math.PI*(t/200),r=(t/200)*80;return{x:100+r*Math.cos(θ),y:100+r*Math.sin(θ)}},
+    t=>{const φ=Math.PI/2;return{x:100+80*Math.sin(3*2*Math.PI*(t/200)+φ),y:100+80*Math.sin(4*2*Math.PI*(t/200))}},
+    t=>({x:t,y:-0.02*(t-100)*(t-100)+150}),
+    t=>{const m=(t%40)<20?(t%40):(40-(t%40));return{x:t,y:m*5}}
+  ];
+  const data = funcs.flatMap((fn,i)=>generateData(`obj${i+1}`,t0,t1,step,i === 7 ? 8 : noise,fn));
+
+  // Setup SVG & scales
+  const svg = d3.select('svg'),
+        margin = {top:20,right:150,bottom:40,left:50},
+        width  = +svg.attr('width')  - margin.left - margin.right,
+        height = +svg.attr('height') - margin.top  - margin.bottom;
+  const container = svg.append('g')
+        .attr('transform',`translate(${margin.left},${margin.top})`);
+  const xScale = d3.scaleLinear()
+        .domain(d3.extent(data,d=>d.x)).nice()
+        .range([0,width]);
+  const yScale = d3.scaleLinear()
+        .domain(d3.extent(data,d=>d.y)).nice()
+        .range([height,0]);
+
+  // Static grid & axes
+  container.append('g').attr('class','grid')
+    .attr('transform',`translate(0,${height})`)
+    .call(d3.axisBottom(xScale).ticks(10).tickSize(-height).tickFormat(''));
+  container.append('g').attr('class','grid')
+    .call(d3.axisLeft(yScale).ticks(10).tickSize(-width).tickFormat(''));
+  const xAxisG = container.append('g').attr('class','axis')
+        .attr('transform',`translate(0,${height})`)
+        .call(d3.axisBottom(xScale));
+  const yAxisG = container.append('g').attr('class','axis')
+        .call(d3.axisLeft(yScale));
+  container.append('text')
+    .attr('x',width/2).attr('y',height+35)
+    .attr('text-anchor','middle').attr('fill','lightgray')
+    .text('X Position');
+  container.append('text')
+    .attr('transform','rotate(-90)')
+    .attr('x',-height/2).attr('y',-35)
+    .attr('text-anchor','middle').attr('fill','lightgray')
+    .text('Y Position');
+
+  // Filters & legend
+  const objects = Array.from(new Set(data.map(d=>d.object))),
+        types   = Array.from(new Set(data.map(d=>d.type))),
+        color   = d3.scaleOrdinal().domain(objects).range(d3.schemeTableau10),
+        shape   = d3.scaleOrdinal().domain(types).range([d3.symbolCircle,d3.symbolCross]);
+  objects.forEach(o=>{
+    d3.select('#objectFilters')
+      .append('label').style('margin-right','8px')
+      .html(`<input type="checkbox" id="obj_${o}" checked> ${o}`);
+  });
+  types.forEach(t=>{
+    d3.select('#typeFilters')
+      .append('label').style('margin-right','8px')
+      .html(`<input type="checkbox" id="type_${t}" checked> ${t}`);
+  });
+  const legend = container.append('g')
+        .attr('class','legend')
+        .attr('transform',`translate(${width+20},0)`);
+  legend.append('text').text('Objects:').attr('y',0);
+  objects.forEach((o,i)=>{
+    const y0 = 12 + i*15;
+    legend.append('rect').attr('x',0).attr('y',y0-10).attr('width',10).attr('height',10).attr('fill',color(o));
+    legend.append('text').attr('x',15).attr('y',y0).attr('alignment-baseline','middle').text(o);
+  });
+  const toff = 12 + objects.length*15 + 20;
+  legend.append('text').text('Types:').attr('y',toff);
+  types.forEach((t,j)=>{
+    const y1 = toff + 12 + j*15;
+    legend.append('path').attr('transform',`translate(5,${y1-6})`)
+      .attr('d',d3.symbol().type(shape(t)).size(80)())
+      .attr('fill',t==='truth'?'#000':'none').attr('stroke','#000');
+    legend.append('text').attr('x',15).attr('y',y1).attr('alignment-baseline','middle').text(t);
+  });
+
+  let currentTransform = d3.zoomIdentity;
+  const plotArea = container.append('g');
+
+  function update() {
+    // compute window
+    const latest  = +d3.select('#timeSlider').property('value'),
+          history = +d3.select('#windowInput').property('value'),
+          tMin    = Math.max(t0, latest - history),
+          tMax    = latest;
+    d3.select('#timeValue').text(latest);
+
+    // highlight on slider
+    const pctStart = ((tMin - t0)/(t1 - t0))*100,
+          pctEnd   = ((tMax - t0)/(t1 - t0))*100;
+    d3.select('#timeSlider')
+      .style('--win-start',`${pctStart}%`)
+      .style('--win-end',  `${pctEnd}%`);
+
+    // active filters
+    const activeObjs  = objects.filter(o=>d3.select(`#obj_${o}`).property('checked')),
+          activeTypes = types.filter(t=>d3.select(`#type_${t}`).property('checked'));
+
+    // visible data
+    const visible = data.filter(d=>
+      d.time>=tMin && d.time<=tMax &&
+      activeObjs.includes(d.object) &&
+      activeTypes.includes(d.type)
+    );
+
+    const showVel = d3.select('#velocityToggle').property('checked');
+
+    // — Sparklines —
+    // clear old
+    d3.select('#sparklines').selectAll('svg.spark').remove();
+    // compute per-object error series
+    const truthMap = new Map(visible.filter(d=>d.type==='truth')
+      .map(d=>[`${d.object}|${d.time}`, d]));
+    const errorSeries = visible.filter(d=>d.type==='measured').map(m=>{
+      const t = truthMap.get(`${m.object}|${m.time}`);
+      return t ? {object:m.object, time:m.time, error:Math.hypot(m.x-t.x, m.y-t.y)} : null;
+    }).filter(d=>d);
+    const maxErr = d3.max(errorSeries, d=>d.error) || 1;
+
+    activeObjs.forEach(o=>{
+      const series = errorSeries.filter(d=>d.object===o);
+      if (!series.length) return;
+      const sw = 180, sh = 60;
+      const sx = d3.scaleLinear().domain([tMin,tMax]).range([0,sw]);
+      const sy = d3.scaleLinear().domain([0,maxErr]).range([sh,0]);
+      const lineGen = d3.line()
+        .x(d=>sx(d.time))
+        .y(d=>sy(d.error))
+        .curve(d3.curveMonotoneX);
+
+      const svgSpark = d3.select('#sparklines')
+        .append('svg').attr('class','spark').attr('width',sw).attr('height',sh);
+      // draw path
+      svgSpark.append('path')
+        .datum(series)
+        .attr('d', lineGen)
+        .attr('fill','none')
+        .attr('stroke', color(o))
+        .attr('stroke-width', 1.2);
+      // object label
+      svgSpark.append('text')
+        .attr('x',2).attr('y',10)
+        .attr('fill','#cccccc').attr('font-size',8)
+        .text(o);
+    });
+
+    // — Error bands & symbols & vectors —
+    // draw symbols
+    const pts = plotArea.selectAll('path.symbol')
+      .data(visible, d=>`${d.object}|${d.type}|${d.time}`);
+    pts.exit().remove();
+    const enter = pts.enter().append('path')
+      .attr('class',d=>`symbol ${d.type}`)
+      .attr('d', d3.symbol().type(d=>shape(d.type)).size(80))
+      .attr('fill',d=>d.type==='truth'?color(d.object):'none')
+      .attr('stroke',d=>color(d.object));
+    const zx = x=>currentTransform.rescaleX(xScale)(x),
+          zy = y=>currentTransform.rescaleY(yScale)(y);
+    enter.merge(pts)
+      .attr('transform',d=>`translate(${zx(d.x)},${zy(d.y)})`);
+
+    // hide measured when showing vectors
+    plotArea.selectAll('path.symbol.measured')
+      .style('display', showVel ? 'none' : 'inline');
+
+
+      const errorMap = new Map();
+        visible
+        .filter(d => d.type === 'measured')
+        .forEach(m => {
+            // find matching truth point
+            const t = visible.find(t =>
+            t.type === 'truth' &&
+            t.object === m.object &&
+            t.time   === m.time
+            );
+            if (!t) return;
+            const err = Math.hypot(m.x - t.x, m.y - t.y);
+            errorMap.set(`${m.object}|${m.time}`, err);
+        });
+    // error bands
+    plotArea.selectAll('path.error-band').remove();
+    activeObjs.forEach(o => {
+        // gather truth points with their actual error
+        const seq = visible
+            .filter(d => d.object === o && d.type === 'truth')
+            .map(d => ({
+            x:     d.x,
+            y:     d.y,
+            error: errorMap.get(`${o}|${d.time}`) || 0
+            }))
+            .sort((a,b) => a.time - b.time);
+
+        if (seq.length < 2) return;
+
+        const areaGen = d3.area()
+            .x(d => zx(d.x))
+            .y0(d => zy(d.y - d.error))
+            .y1(d => zy(d.y + d.error))
+            .curve(d3.curveMonotoneX);
+
+        plotArea.insert('path', '.symbol')
+            .attr('class', 'error-band')
+            .attr('d', areaGen(seq))
+            .attr('fill', color(o))
+            .attr('opacity', 0.1);
+        });
+
+    // vectors
+    plotArea.selectAll('line.vector').remove();
+    if (showVel) {
+      const measuredPts = visible.filter(d=>d.type==='measured').map(d=>{
+        const prev = visible.find(p=>p.object===d.object && p.type==='measured' && p.time===d.time-step);
+        if (!prev) return null;
+        const dx=d.x-prev.x, dy=d.y-prev.y;
+        return {x1:prev.x,y1:prev.y,x2:d.x,y2:d.y,speed:Math.hypot(dx,dy)/step};
+      }).filter(d=>d);
+      if (measuredPts.length) {
+        const extent = d3.extent(measuredPts,d=>d.speed);
+        const colorScale = d3.scaleSequential(d3.interpolateTurbo).domain(extent);
+        const widthScale = d3.scaleLinear().domain(extent).range([1,4]);
+        measuredPts.forEach(d=>{
+          plotArea.append('line')
+            .attr('class','vector')
+            .attr('x1',zx(d.x1)).attr('y1',zy(d.y1))
+            .attr('x2',zx(d.x2)).attr('y2',zy(d.y2))
+            .attr('stroke',colorScale(d.speed))
+            .attr('stroke-width',widthScale(d.speed));
+        });
+      }
+    }
+  }
+
+  // Hooks
+  d3.select('#timeSlider').on('input', update);
+  d3.select('#windowInput').on('input', update);
+  d3.select('#velocityToggle').on('change', update);
+  d3.selectAll('#objectFilters input,#typeFilters input').on('change', update);
+
+  // Initial draw
+  update();
+
+  // Zoom/pan
+  svg.call(d3.zoom()
+    .scaleExtent([0.5,10])
+    .translateExtent([[0,0],[width,height]])
+    .extent([[0,0],[width,height]])
+    .on('zoom', event=>{
+      currentTransform = event.transform;
+      const zx2 = event.transform.rescaleX(xScale),
+            zy2 = event.transform.rescaleY(yScale);
+      xAxisG.call(d3.axisBottom(zx2));
+      yAxisG.call(d3.axisLeft(zy2));
+      container.selectAll('.grid').remove();
+      container.append('g').attr('class','grid')
+        .attr('transform',`translate(0,${height})`)
+        .call(d3.axisBottom(zx2).ticks(10).tickSize(-height).tickFormat(''));
+      container.append('g').attr('class','grid')
+        .call(d3.axisLeft(zy2).ticks(10).tickSize(-width).tickFormat(''));
+      update();
+    })
+  );
+  </script>
+</body>
+</html>

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>2D Scatter - Futuristic VSCode Style</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    /* Body & Layout */
+    body {
+    margin: 0;
+    padding: 20px;
+    background-color: #1e1e1e;
+    color: #cccccc;
+    font-family: 'Segoe UI', 'Consolas', 'Roboto', monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    width: 100vw;
+
+    /* Option 4: Faint grid lines */
+    background-image: linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px),
+                      linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px);
+    background-size: 20px 20px;
+}
+
+    /* SVG Styling */
+    svg {
+      background-color: #252526;
+      /* Gentle radial highlight for focus */
+      background-image: radial-gradient(circle at center, rgba(255,255,255,0.02), transparent 70%);
+      border-radius: 4px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      margin-bottom: 20px;
+    }
+
+    /* Controls panel (below chart) */
+    #controls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      width: 800px;
+      background-color: #252526;
+      padding: 10px 15px;
+      border-radius: 4px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      margin-top: 10px;
+    }
+    #controls > div { margin: 5px 10px; }
+    label { color: #cccccc; font-size: 0.9rem; }
+
+    /* Time slider styling with highlight window */
+input[type=range] {
+  width: 600px;
+  margin: 0 8px;
+  /* CSS vars for highlight positions */
+  --win-start: 0%;
+  --win-end: 0%;
+  background: transparent;
+}
+
+/* WebKit track */
+input[type=range]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    #888888 0%,
+    #888888 var(--win-start),
+    #4fc3f7 var(--win-start),
+    #4fc3f7 var(--win-end),
+    #888888 var(--win-end),
+    #888888 100%
+  );
+  background-size: calc(100% - 14px) 100%;
+  background-position: 7px 0;
+}
+
+/* WebKit thumb */
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #007acc;
+  cursor: pointer;
+  margin-top: -5px;
+}
+
+/* Gecko track */
+input[type=range]::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    #888888 0%,
+    #888888 var(--win-start),
+    #4fc3f7 var(--win-start),
+    #4fc3f7 var(--win-end),
+    #888888 var(--win-end),
+    #888888 100%
+  );
+}
+
+/* Gecko thumb */
+input[type=range]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #007acc;
+  cursor: pointer;
+  margin-top: -4px;
+}
+    input[type=number] {
+      width: 4ch;
+      background-color: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      color: #cccccc;
+      border-radius: 2px;
+      padding: 2px;
+    }
+    input[type=checkbox] { accent-color: #007acc; margin-right: 4px; }
+
+    /* Grid lines */
+    .grid line { stroke: #333333; stroke-opacity: 0.6; }
+    .grid path { display: none; }
+
+    /* Axes */
+    .axis path, .axis line { stroke: #3c3c3c; }
+    .axis text { fill: #cccccc; }
+
+    /* Data symbols */
+    .symbol { stroke-width: 1.5px; opacity: 0.9; }
+
+    /* Legend */
+    .legend text { fill: #cccccc; font-size: 10px; }
+    .legend rect, .legend path { stroke: #cccccc; stroke-width: 1px; }
+  </style>
+</head>
+<body>
+  <svg width="800" height="600"></svg>
+
+  <div id="controls">
+    <div>
+      <label>Time:
+        <input type="range" id="timeSlider" min="0" max="200" step="1" value="0">
+        <span id="timeValue">0</span>
+      </label>
+    </div>
+    <div>
+      <label>Window ±
+        <input type="number" id="windowInput" value="10" min="0" max="200"> timesteps
+      </label>
+    </div>
+    <div id="objectFilters"></div>
+    <div id="typeFilters"></div>
+  </div>
+
+  <script>
+  // Data generator
+  function generateData(obj, t0, t1, step, noise, truthFn) {
+    const arr = [];
+    for (let t = t0; t <= t1; t += step) {
+      const {x,y} = truthFn(t);
+      arr.push({object:obj, type:'truth', time:t, x, y});
+      arr.push({object:obj, type:'measured', time:t,
+        x: x + (Math.random()*2 - 1)*noise,
+        y: y + (Math.random()*2 - 1)*noise
+      });
+    }
+    return arr;
+  }
+  const t0=0, t1=200, step=2, noise=2;
+  const funcs = [
+    t=>({x:t,      y:0.5*t}),
+    t=>({x:0.2*t,  y:0.8*t}),
+    t=>{const θ=2*Math.PI*(t/200); return {x:100+80*Math.cos(θ), y:100+80*Math.sin(θ)}},
+    t=>{const θ=2*Math.PI*(t/200); return {x:100+100*Math.cos(θ), y:100+50*Math.sin(θ)}},
+    t=>({x:t,      y:100+50*Math.sin(2*Math.PI*(t/200))}),
+    t=>({x:100+50*Math.cos(2*Math.PI*(t/200)), y:t}),
+    t=>{const θ=4*Math.PI*(t/200), r=(t/200)*80; return {x:100+r*Math.cos(θ), y:100+r*Math.sin(θ)}},
+    t=>{const φ=Math.PI/2; return {x:100+80*Math.sin(3*2*Math.PI*(t/200)+φ), y:100+80*Math.sin(4*2*Math.PI*(t/200))}},
+    t=>({x:t, y:-0.02*(t-100)*(t-100)+150}),
+    t=>{const m=(t%40)<20 ? (t%40) : (40-(t%40)); return {x:t, y:m*5}}];
+  const data = funcs.flatMap((fn,i) => generateData(`obj${i+1}`, t0, t1, step, noise, fn));
+
+  const svg = d3.select('svg');
+  const margin = {top:20, right:150, bottom:40, left:50};
+  const width = +svg.attr('width') - margin.left - margin.right;
+  const height = +svg.attr('height') - margin.top - margin.bottom;
+  const container = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+  const xScale = d3.scaleLinear().domain(d3.extent(data, d=>d.x)).nice().range([0, width]);
+  const yScale = d3.scaleLinear().domain(d3.extent(data, d=>d.y)).nice().range([height, 0]);
+
+  const xGrid = container.append('g').attr('class','grid')
+    .attr('transform', `translate(0,${height})`)
+    .call(d3.axisBottom(xScale).ticks(10).tickSize(-height).tickFormat(''));
+  const yGrid = container.append('g').attr('class','grid')
+    .call(d3.axisLeft(yScale).ticks(10).tickSize(-width).tickFormat(''));
+
+  const plotArea = container.append('g');
+
+  const xAxisG = container.append('g').attr('class','axis')
+    .attr('transform', `translate(0,${height})`)
+    .call(d3.axisBottom(xScale));
+  const yAxisG = container.append('g').attr('class','axis')
+    .call(d3.axisLeft(yScale));
+
+  container.append('text')
+    .attr('x', width/2).attr('y', height+35)
+    .attr('text-anchor', 'middle').attr('fill', 'lightgray').text('X Position');
+  container.append('text')
+    .attr('transform', 'rotate(-90)')
+    .attr('x', -height/2).attr('y', -35)
+    .attr('text-anchor', 'middle').attr('fill', 'lightgray').text('Y Position');
+
+  const objects = Array.from(new Set(data.map(d => d.object)));
+  const types = Array.from(new Set(data.map(d => d.type)));
+  const color = d3.scaleOrdinal().domain(objects).range(d3.schemeTableau10);
+  const shape = d3.scaleOrdinal().domain(types).range([d3.symbolCircle, d3.symbolCross]);
+
+  const objFilt = d3.select('#objectFilters');
+  objects.forEach(o => objFilt.append('label').style('margin-right','8px')
+    .html(`<input type="checkbox" id="obj_${o}" checked> ${o}`));
+  const typeFilt = d3.select('#typeFilters');
+  types.forEach(t => typeFilt.append('label').style('margin-right','8px')
+    .html(`<input type="checkbox" id="type_${t}" checked> ${t}`));
+
+  const legend = container.append('g').attr('class','legend').attr('transform', `translate(${width+20},0)`);
+  legend.append('text').text('Objects:').attr('y',0);
+  objects.forEach((o,i) => { const y0 = 12 + i*15;
+    legend.append('rect').attr('x',0).attr('y',y0-10).attr('width',10).attr('height',10).attr('fill',color(o));
+    legend.append('text').attr('x',15).attr('y',y0).attr('alignment-baseline','middle').text(o);
+  });
+  const toff = 12 + objects.length*15 + 20;
+  legend.append('text').text('Types:').attr('y',toff-5);
+  types.forEach((t,j) => { const y1 = toff + 12 + j*15;
+    legend.append('path').attr('transform', `translate(5,${y1-6})`)
+      .attr('d', d3.symbol().type(shape(t)).size(80)())
+      .attr('fill', t==='truth' ? '#000' : 'none').attr('stroke','#000');
+    legend.append('text').attr('x',15).attr('y',y1).attr('alignment-baseline','middle').text(t);
+  });
+
+  let currentTransform = d3.zoomIdentity;
+
+  function update() {
+    const center = +d3.select('#timeSlider').property('value');
+    const win = +d3.select('#windowInput').property('value');
+    const tMin = Math.max(t0, center - win);
+    const tMax = Math.min(t1, center + win);
+    d3.select('#timeValue').text(center);
+
+    // highlight slider range
+    const pctStart = ((tMin - t0) / (t1 - t0)) * 100;
+    const pctEnd = ((tMax - t0) / (t1 - t0)) * 100;
+    d3.select('#timeSlider')
+      .style('--win-start', `${pctStart}%`)
+      .style('--win-end', `${pctEnd}%`);
+
+    const activeObjs = objects.filter(o => d3.select(`#obj_${o}`).property('checked'));
+    const activeTypes = types.filter(t => d3.select(`#type_${t}`).property('checked'));
+
+    const visible = data.filter(d =>
+      d.time >= tMin && d.time <= tMax &&
+      activeObjs.includes(d.object) &&
+      activeTypes.includes(d.type)
+    );
+
+    const pts = plotArea.selectAll('.symbol')
+      .data(visible, d => `${d.object}|${d.type}|${d.time}`);
+    pts.exit().remove();
+    const enter = pts.enter().append('path')
+      .attr('class','symbol')
+      .attr('d', d3.symbol().type(d => shape(d.type)).size(80))
+      .attr('fill', d => d.type === 'truth' ? color(d.object) : 'none')
+      .attr('stroke', d => color(d.object));
+
+    const zx = currentTransform.rescaleX(xScale);
+    const zy = currentTransform.rescaleY(yScale);
+    enter.merge(pts).attr('transform', d => `translate(${zx(d.x)},${zy(d.y)})`);
+  }
+
+  d3.select('#timeSlider').on('input', update);
+  d3.select('#windowInput').on('input', update);
+  d3.selectAll('#objectFilters input, #typeFilters input').on('change', update);
+
+  update();
+
+  const zoom = d3.zoom()
+    .scaleExtent([0.5,10])
+    .translateExtent([[0,0],[width,height]])
+    .extent([[0,0],[width,height]])
+    .on('zoom', event => {
+      currentTransform = event.transform;
+      const zx = currentTransform.rescaleX(xScale);
+      const zy = currentTransform.rescaleY(yScale);
+      xAxisG.call(d3.axisBottom(zx));
+      yAxisG.call(d3.axisLeft(zy));
+      xGrid.call(d3.axisBottom(zx).ticks(10).tickSize(-height).tickFormat(''));
+      yGrid.call(d3.axisLeft(zy).ticks(10).tickSize(-width).tickFormat(''));
+      plotArea.selectAll('.symbol').attr('transform', d => `translate(${zx(d.x)},${zy(d.y)})`);
+    });
+
+  svg.call(zoom);
+  </script>
+</body>
+</html>
